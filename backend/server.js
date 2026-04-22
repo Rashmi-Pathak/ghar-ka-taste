@@ -32,7 +32,11 @@ app.use('/api/admin', require('./routes/admin'));
 app.get('/api/health', (req, res) => res.json({ status: 'ok', message: 'Ghar Ka Taste API running 🍛' }));
 
 // Initialize DB then start server
-initDb();
-app.listen(PORT, () => {
-  console.log(`✅ Ghar Ka Taste Server running at http://localhost:${PORT}`);
-});
+const startServer = async () => {
+  await initDb();
+  app.listen(PORT, () => {
+    console.log(`✅ Ghar Ka Taste Server running at http://localhost:${PORT}`);
+  });
+};
+
+startServer();

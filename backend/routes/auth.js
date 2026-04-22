@@ -22,14 +22,21 @@ router.post('/send-otp', async (req, res) => {
 
   try {
     const db = getDb();
-    const exists = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
-    if (exists) return res.status(409).json({ error: 'Email already registered' });
+    const result = await db.execute({
+      sql: 'SELECT id FROM users WHERE email = ?',
+      args: [email]
+    });
+    
+    if (result.rows.length > 0) return res.status(409).json({ error: 'Email already registered' });
 
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 mins
 
-    db.prepare('DELETE FROM otps WHERE email = ?').run(email);
-    db.prepare('INSERT INTO otps (email, code, expires_at) VALUES (?, ?, ?)').run(email, otpCode, expiresAt);
+    await db.execute({ sql: 'DELETE FROM otps WHERE email = ?', args: [email] });
+    await db.execute({
+      sql: 'INSERT INTO otps (email, code, expires_at) VALUES (?, ?, ?)',
+      args: [email, otpCode, expiresAt]
+    });
 
     await transporter.sendMail({
       from: `"Ghar Ka Taste" <${process.env.GMAIL_USER}>`,
@@ -54,7 +61,7 @@ router.post('/send-otp', async (req, res) => {
 });
 
 // Register
-router.post('/register', (req, res) => {
+router.post('/register', async (req, res) => {
   const { name, email, password, role, otp_code } = req.body;
   if (!name || !email || !password || !role || !otp_code)
     return res.status(400).json({ error: 'All fields required including OTP' });
@@ -65,41 +72,57 @@ router.post('/register', (req, res) => {
     const db = getDb();
     
     // Verify OTP
-    const otpRecord = db.prepare('SELECT * FROM otps WHERE email = ? ORDER BY id DESC LIMIT 1').get(email);
+    const otpResult = await db.execute({
+      sql: 'SELECT * FROM otps WHERE email = ? ORDER BY id DESC LIMIT 1',
+      args: [email]
+    });
+    const otpRecord = otpResult.rows[0];
+
     if (!otpRecord) return res.status(400).json({ error: 'Please request an OTP first' });
     if (otpRecord.code !== otp_code) return res.status(400).json({ error: 'Invalid OTP code' });
     if (new Date(otpRecord.expires_at) < new Date()) return res.status(400).json({ error: 'OTP expired' });
 
-    const exists = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
-    if (exists) return res.status(409).json({ error: 'Email already registered' });
+    const existsResult = await db.execute({
+      sql: 'SELECT id FROM users WHERE email = ?',
+      args: [email]
+    });
+    if (existsResult.rows.length > 0) return res.status(409).json({ error: 'Email already registered' });
 
-    const hash = bcrypt.hashSync(password, 10);
-    const result = db.prepare(
-      'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)'
-    ).run(name, email, hash, role);
+    const hash = await bcrypt.hash(password, 10);
+    const result = await db.execute({
+      sql: 'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)',
+      args: [name, email, hash, role]
+    });
+    
+    const userId = Number(result.lastInsertRowid);
     
     // Cleanup OTP
-    db.prepare('DELETE FROM otps WHERE email = ?').run(email);
+    await db.execute({ sql: 'DELETE FROM otps WHERE email = ?', args: [email] });
 
-    const token = jwt.sign({ id: result.lastInsertRowid, name, email, role }, JWT_SECRET, { expiresIn: '7d' });
-    res.status(201).json({ token, user: { id: result.lastInsertRowid, name, email, role } });
+    const token = jwt.sign({ id: userId, name, email, role }, JWT_SECRET, { expiresIn: '7d' });
+    res.status(201).json({ token, user: { id: userId, name, email, role } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // Login
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password)
     return res.status(400).json({ error: 'Email and password required' });
 
   try {
     const db = getDb();
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const result = await db.execute({
+      sql: 'SELECT * FROM users WHERE email = ?',
+      args: [email]
+    });
+    const user = result.rows[0];
+
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
-    const valid = bcrypt.compareSync(password, user.password);
+    const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
     const token = jwt.sign(
@@ -113,25 +136,7 @@ router.post('/login', (req, res) => {
   }
 });
 
-// Delete account
-router.delete('/account', authenticate, (req, res) => {
-  try {
-    const db = getDb();
-    db.prepare('DELETE FROM users WHERE id = ?').run(req.user.id);
-    res.json({ message: 'Account deleted' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Get current user profile
-router.get('/me', authenticate, (req, res) => {
-  const db = getDb();
-  const user = db.prepare('SELECT id, name, email, role, created_at FROM users WHERE id = ?').get(req.user.id);
-  res.json(user);
-});
-
-function authenticate(req, res, next) {
+async function authenticate(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer '))
     return res.status(401).json({ error: 'Unauthorized' });
@@ -143,32 +148,51 @@ function authenticate(req, res, next) {
   }
 }
 
-// GET current user
-router.get('/me', authenticate, (req, res) => {
-  const db = getDb();
-  const user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(req.user.id);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json(user);
+// Get current user profile
+router.get('/me', authenticate, async (req, res) => {
+  try {
+    const db = getDb();
+    const result = await db.execute({
+      sql: 'SELECT id, name, email, role, created_at FROM users WHERE id = ?',
+      args: [req.user.id]
+    });
+    const user = result.rows[0];
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // DELETE account
-router.delete('/account', authenticate, (req, res) => {
+router.delete('/account', authenticate, async (req, res) => {
   const db = getDb();
   try {
-    // Cascade delete related data
-    const chef = db.prepare('SELECT id FROM chefs WHERE user_id = ?').get(req.user.id);
+    const userId = req.user.id;
+    
+    // Cascade delete related data (LibSQL/SQLite handles some via CASCADE but manual is safer here)
+    const chefResult = await db.execute({ sql: 'SELECT id FROM chefs WHERE user_id = ?', args: [userId] });
+    const chef = chefResult.rows[0];
+    
     if (chef) {
-      db.prepare('DELETE FROM meals WHERE chef_id = ?').run(chef.id);
-      db.prepare('DELETE FROM orders WHERE chef_id = ?').run(chef.id);
-      db.prepare('DELETE FROM feedback WHERE chef_id = ?').run(chef.id);
-      db.prepare('DELETE FROM favorites WHERE chef_id = ?').run(chef.id);
-      db.prepare('DELETE FROM chefs WHERE id = ?').run(chef.id);
+      await db.execute({ sql: 'DELETE FROM meals WHERE chef_id = ?', args: [chef.id] });
+      await db.execute({ sql: 'DELETE FROM orders WHERE chef_id = ?', args: [chef.id] });
+      await db.execute({ sql: 'DELETE FROM feedback WHERE chef_id = ?', args: [chef.id] });
+      await db.execute({ sql: 'DELETE FROM favorites WHERE chef_id = ?', args: [chef.id] });
+      await db.execute({ sql: 'DELETE FROM chefs WHERE id = ?', args: [chef.id] });
     }
-    db.prepare('DELETE FROM orders WHERE customer_id = ?').run(req.user.id);
-    db.prepare('DELETE FROM favorites WHERE user_id = ?').run(req.user.id);
-    db.prepare('DELETE FROM feedback WHERE user_id = ?').run(req.user.id);
-    db.prepare('DELETE FROM otps WHERE email = (SELECT email FROM users WHERE id = ?)').run(req.user.id);
-    db.prepare('DELETE FROM users WHERE id = ?').run(req.user.id);
+    
+    await db.execute({ sql: 'DELETE FROM orders WHERE customer_id = ?', args: [userId] });
+    await db.execute({ sql: 'DELETE FROM favorites WHERE user_id = ?', args: [userId] });
+    await db.execute({ sql: 'DELETE FROM feedback WHERE user_id = ?', args: [userId] });
+    
+    // Cleanup OTP using email
+    const emailResult = await db.execute({ sql: 'SELECT email FROM users WHERE id = ?', args: [userId] });
+    if (emailResult.rows[0]) {
+      await db.execute({ sql: 'DELETE FROM otps WHERE email = ?', args: [emailResult.rows[0].email] });
+    }
+    
+    await db.execute({ sql: 'DELETE FROM users WHERE id = ?', args: [userId] });
     res.json({ message: 'Account deleted' });
   } catch (e) {
     console.error(e);
