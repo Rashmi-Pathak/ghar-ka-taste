@@ -1,0 +1,25 @@
+# IDE
+.vscode/
+.idea/
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Production builds
+frontend/dist/
+
+# Database and uploads
+backend/gharkatasté.db
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Environment variables
+.env
+backend/.env
+frontend/.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
