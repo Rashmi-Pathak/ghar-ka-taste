@@ -18,7 +18,10 @@ const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 
 // Middleware
-app.use(cors({ origin: [process.env.FRONTEND_URL, 'http://localhost:5173'].filter(Boolean), credentials: true }));
+app.use(cors({ 
+  origin: true, // This allows any origin that sends the request, perfect for quick fixes
+  credentials: true 
+}));
 app.use(express.json());
 app.use('/uploads', express.static(uploadsDir));
 
